@@ -1,6 +1,7 @@
+// TODO: add imports
 import {NextFunction, Request, Response} from 'express';
 import CustomError from '../../classes/CustomError';
-import {User} from '@sharedTypes/DBTypes';
+import {User, UserWithNoPassword} from '@sharedTypes/DBTypes';
 import {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -8,7 +9,7 @@ import {
   RegistrationResponseJSON,
 } from '@simplewebauthn/types';
 import fetchData from '../../utils/fetchData';
-import {UserResponse} from '@sharedTypes/MessageTypes';
+import {LoginResponse, UserResponse} from '@sharedTypes/MessageTypes';
 import {
   generateAuthenticationOptions,
   GenerateAuthenticationOptionsOpts,
@@ -22,6 +23,7 @@ import {Challenge, PasskeyUserGet} from '../../types/PasskeyTypes';
 import challengeModel from '../models/challengeModel';
 import passkeyUserModel from '../models/passkeyUserModel';
 import authenticatorDeviceModel from '../models/authenticatorDeviceModel';
+import jwt from 'jsonwebtoken';
 
 // check environment variables
 if (
@@ -34,13 +36,7 @@ if (
   throw new Error('Environment variables not set');
 }
 
-const {
-  NODE_ENV,
-  RP_ID,
-  AUTH_URL,
-  // JWT_SECRET,
-  RP_NAME,
-} = process.env;
+const {NODE_ENV, RP_ID, AUTH_URL, JWT_SECRET, RP_NAME} = process.env;
 
 // Registration handler
 const setupPasskey = async (
@@ -248,7 +244,7 @@ const verifyAuthentication = async (
     {},
     {email: string; authResponse: AuthenticationResponseJSON}
   >,
-  res: Response,
+  res: Response<LoginResponse>,
   next: NextFunction,
 ) => {
   try {
@@ -273,6 +269,7 @@ const verifyAuthentication = async (
     }
     // Verify authentication response
     const opts: VerifyAuthenticationResponseOpts = {
+      expectedRPID: RP_ID,
       response: authResponse,
       expectedChallenge: expectedChallenge.challenge,
       expectedOrigin:
@@ -298,9 +295,35 @@ const verifyAuthentication = async (
       });
     }
 
-    // TODO: Clear challenge from DB after successful authentication
+    // Clear challenge from DB after successful authentication
     await challengeModel.findOneAndDelete({email});
-    // TODO: Generate and send JWT token
+
+    // Generate and send JWT token
+    const userResponse = await fetchData<UserWithNoPassword>(
+      AUTH_URL + '/api/v1/users/' + user.userId,
+    );
+
+    if (!userResponse) {
+      next(new CustomError('User not found', 400));
+    }
+
+    console.log(userResponse);
+
+    const token = jwt.sign(
+      {
+        user_id: userResponse.user_id,
+        level_name: userResponse.level_name,
+      },
+      JWT_SECRET,
+    );
+
+    const message: LoginResponse = {
+      message: 'Login success',
+      token,
+      user: userResponse,
+    };
+
+    res.json(message);
   } catch (error) {
     next(new CustomError((error as Error).message, 500));
   }
